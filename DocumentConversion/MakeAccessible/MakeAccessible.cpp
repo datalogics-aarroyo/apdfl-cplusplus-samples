@@ -8,15 +8,14 @@
 //   2. Apply:   consumes a structure manifest to tag the PDF
 //
 // Usage:
-//   MakeAccessible <input.pdf> extract [output.json]
-//   MakeAccessible <input.pdf> apply <manifest.json> [output.pdf]
+//   MakeAccessible <input.pdf>                    Extract page descriptor → <input>.json
+//   MakeAccessible <input.pdf> <manifest.json>    Apply manifest → <input>_tagged.pdf
 //
 
 #include <iostream>
 #include <fstream>
 #include <sstream>
 #include <string>
-#include <cstring>
 
 #include "InitializeLibrary.h"
 #include "APDFLDoc.h"
@@ -32,18 +31,27 @@
 
 #include "DLMakeAccessible.h"
 
-#define DEF_INPUT "../../../../Resources/Sample_Input/MakeAccessible.pdf"
-#define DEF_EXTRACT_OUTPUT "page_descriptor.json"
-#define DEF_APPLY_OUTPUT "MakeAccessible-out.pdf"
-
 static void printUsage(const char *prog) {
     std::cout << "Usage:" << std::endl;
-    std::cout << "  " << prog << " <input.pdf> extract [output.json]" << std::endl;
-    std::cout << "  " << prog << " <input.pdf> apply <manifest.json> [output.pdf]" << std::endl;
+    std::cout << "  " << prog << " <input.pdf>                  Extract page descriptor" << std::endl;
+    std::cout << "  " << prog << " <input.pdf> <manifest.json>  Apply manifest and tag PDF" << std::endl;
     std::cout << std::endl;
-    std::cout << "Modes:" << std::endl;
-    std::cout << "  extract  Generate a JSON page descriptor for external analysis." << std::endl;
-    std::cout << "  apply    Apply a structure manifest to tag the PDF." << std::endl;
+    std::cout << "Extract mode produces <basename>.json from <basename>.pdf" << std::endl;
+    std::cout << "Apply mode produces <basename>_tagged.pdf" << std::endl;
+}
+
+/* Strip directory and extension from a file path to get the base name */
+static std::string getBaseName(const std::string &path) {
+    /* Find last path separator */
+    size_t lastSlash = path.find_last_of("/\\");
+    std::string filename = (lastSlash == std::string::npos) ? path : path.substr(lastSlash + 1);
+
+    /* Strip extension */
+    size_t lastDot = filename.rfind('.');
+    if (lastDot != std::string::npos)
+        filename = filename.substr(0, lastDot);
+
+    return filename;
 }
 
 static std::string readFile(const std::string &path) {
@@ -77,26 +85,19 @@ int main(int argc, char **argv) {
         return errCode;
     }
 
-    /* Parse arguments */
-    if (argc < 3) {
+    if (argc < 2) {
         printUsage(argv[0]);
         return 1;
     }
 
     std::string inputFile = argv[1];
-    std::string mode = argv[2];
-
-    if (mode != "extract" && mode != "apply") {
-        std::cerr << "Error: unknown mode '" << mode << "'. Use 'extract' or 'apply'." << std::endl;
-        printUsage(argv[0]);
-        return 1;
-    }
+    std::string baseName = getBaseName(inputFile);
 
     DURING
 
-        if (mode == "extract") {
-            /* --- EXTRACT MODE --- */
-            std::string outputFile = (argc > 3) ? argv[3] : DEF_EXTRACT_OUTPUT;
+        if (argc == 2) {
+            /* --- EXTRACT MODE: just a PDF file --- */
+            std::string outputFile = baseName + ".json";
 
             std::cout << "Extracting page descriptor from: " << inputFile << std::endl;
 
@@ -115,34 +116,27 @@ int main(int argc, char **argv) {
                 errCode = 1;
             }
 
-        } else if (mode == "apply") {
-            /* --- APPLY MODE --- */
-            if (argc < 4) {
-                std::cerr << "Error: apply mode requires a manifest JSON file." << std::endl;
-                printUsage(argv[0]);
+        } else if (argc >= 3) {
+            /* --- APPLY MODE: PDF + manifest JSON --- */
+            std::string manifestFile = argv[2];
+            std::string outputFile = baseName + "_tagged.pdf";
+
+            std::cout << "Input PDF: " << inputFile << std::endl;
+            std::cout << "Applying structure manifest from: " << manifestFile << std::endl;
+
+            std::string manifestJSON = readFile(manifestFile);
+            if (manifestJSON.empty()) {
                 errCode = 1;
             } else {
-                std::string manifestFile = argv[3];
-                std::string outputFile = (argc > 4) ? argv[4] : DEF_APPLY_OUTPUT;
+                APDFLDoc document(inputFile.c_str(), true);
 
-                std::cout << "Applying structure manifest from: " << manifestFile << std::endl;
-                std::cout << "Input PDF: " << inputFile << std::endl;
-
-                /* Read the manifest */
-                std::string manifestJSON = readFile(manifestFile);
-                if (manifestJSON.empty()) {
-                    errCode = 1;
+                ASBool success = DLMakeAccessibleApply(document.getPDDoc(), manifestJSON.c_str());
+                if (success) {
+                    document.saveDoc(outputFile.c_str());
+                    std::cout << "Tagged PDF written to: " << outputFile << std::endl;
                 } else {
-                    APDFLDoc document(inputFile.c_str(), true);
-
-                    ASBool success = DLMakeAccessibleApply(document.getPDDoc(), manifestJSON.c_str());
-                    if (success) {
-                        document.saveDoc(outputFile.c_str());
-                        std::cout << "Tagged PDF written to: " << outputFile << std::endl;
-                    } else {
-                        std::cerr << "Error: apply failed." << std::endl;
-                        errCode = 1;
-                    }
+                    std::cerr << "Error: apply failed." << std::endl;
+                    errCode = 1;
                 }
             }
         }
